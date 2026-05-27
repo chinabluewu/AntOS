@@ -2,7 +2,7 @@
 |                            FILE DESCRIPTION                            |
 ------------------------------------------------------------------------*/
 /*------------------------------------------------------------------------
-|  - File name     : os_task.c
+|  - File name     : os_thread.c
 |  - Author        : zevorn
 |  - Update date   : 2021.09.12
 |  - Copyright(C)  : 2021-2021 zevorn. All rights reserved.
@@ -164,21 +164,34 @@ static void os_blklist_delete(os_thread_t *thread)
  **/
 os_thread_t os_rdylist_get_max_prio(os_uint8_t *max_prio_label)
 {
-    os_uint8_t index = 0;
-    os_uint8_t max_prio = 0;
+    os_uint8_t index;
+    os_uint8_t selected;
+    os_uint8_t max_prio;
 
-    *max_prio_label = 0;
+    if (g_thrd_rdylist.num == 0)
+    {
+        if (max_prio_label != OS_NULL)
+            *max_prio_label = 0;
+        return OS_NULL;
+    }
 
-    for (index = 0; index < g_thrd_rdylist.num; index++)
+    /* 以第一个就绪节点作基线，否则 priority==0 的 idle 线程永远比不上初始 max_prio=0，
+     * 当 idle 不在 node[0] 时会返回错误下标。 */
+    selected = 0;
+    max_prio = ((os_thread_t)*g_thrd_rdylist.node[0])->priority;
+
+    for (index = 1; index < g_thrd_rdylist.num; index++)
     {
         if (((os_thread_t)*g_thrd_rdylist.node[index])->priority > max_prio)
         {
             max_prio = ((os_thread_t)*g_thrd_rdylist.node[index])->priority;
-            *max_prio_label = index;
+            selected = index;
         }
     }
 
-    return g_thrd_rdylist.node[*max_prio_label];
+    if (max_prio_label != OS_NULL)
+        *max_prio_label = selected;
+    return g_thrd_rdylist.node[selected];
 }
 
 /**
@@ -244,15 +257,13 @@ os_thread_t os_thread_static_create(os_thread_t *pthread,
     os_uint8_t index = os_object_get_thrd_num();
     os_object_t *list = os_object_get_thrd_list();
 
-    if (index > OS_THREAD_REAL_LEN && priority == 0)
+    /* 线程数量上限保护：OS_THREAD_REAL_LEN 已经包含 idle（和软件定时器）槽位。 */
+    if (index >= OS_THREAD_REAL_LEN)
         goto erro;
 
+    /* 优先级唯一性检查：idle 线程占用 priority=0，用户线程必须各不相同。 */
     while (index)
     {
-        /*
-         * os_thread_t *thread = (os_thread_t *)list[index];
-         * os_uint8_t prio = (*thread)->priority;
-         **/
         if ((*((os_thread_t *)list[--index]))->priority == priority)
             goto erro;
     }
@@ -260,44 +271,51 @@ os_thread_t os_thread_static_create(os_thread_t *pthread,
     OS_ENTER_CRITICAL(); /* RTOS enters the critical area of the system */
 
     *pthread = os_malloc(pthread, sizeof(struct os_thread));
-    if (*pthread != OS_NULL)
+    if (*pthread == OS_NULL)
     {
-        os_object_thread_init((os_object_t *)pthread, OS_Object_Class_Thread);
-
-        (*pthread)->entry = entry;
-        (*pthread)->stk_addr = stk_addr;
-        (*pthread)->stk_size = stk_size;
-        (*pthread)->priority = priority;
-        (*pthread)->status = OS_THREAD_READY;
-
-        /** The bottom of the stack holds the length of the data to be filled in the stack. */
-        *(stk_addr++) = 15; /* 15 = 2 (thread entry of function address) + 13 (mcu register data) */
-
-        /** The second address read task function low 8 bits address.
-        The third address read task function high 8 bits address. */
-        *stk_addr++ = (os_uint16_t)entry;
-        *stk_addr = (os_uint16_t)entry >> 8;
-
-        /** The fourth to sixteenth stack positions are cleared first,
-        and the position here is to save MCU registers.	*/
-        for (index = 0; index < 10; index++)
-        {
-            *(++stk_addr) = 0;
-        }
-
-        *stk_addr++ = (os_uint32_t)param;      /*!< R1 */
-        *stk_addr++ = (os_uint32_t)param >> 8; /*!< R2 */
-        *stk_addr = (os_uint32_t)param >> 16;  /*!< R3 */
-
-        (os_thread_t *)g_thrd_rdylist.node[g_thrd_rdylist.num++] = pthread;
-
+        /* malloc 失败时必须先退出临界区，否则会出现 lock 计数泄漏。 */
         OS_EXIT_CRITICAL();
-        if (g_thrd_run_node != OS_NULL)
-            os_thread_schedule(OS_THREAD_READY);
-        return *pthread;
+        goto erro;
     }
-    erro:
-        return OS_NULL;
+
+    os_object_thread_init((os_object_t *)pthread, OS_Object_Class_Thread);
+
+    (*pthread)->entry = entry;
+    (*pthread)->stk_addr = stk_addr;
+    (*pthread)->stk_size = stk_size;
+    (*pthread)->priority = priority;
+    (*pthread)->status = OS_THREAD_READY;
+
+    /** 栈顶第 0 字节存放后续要拷贝到内核栈的字节数（不含自身）。
+     * 总帧大小 = 2(入口PC低/高) + 寄存器帧。常量定义在 os_cpu.h。 */
+    *(stk_addr++) = OS_CTX_FRAME_SIZE;
+
+    /** 入口地址低 8 位在前，高 8 位在后；调度恢复后 RET 弹出该 PC。 */
+    *stk_addr++ = (os_uint16_t)entry;
+    *stk_addr = (os_uint16_t)entry >> 8;
+
+    /** 寄存器帧（按 PUSH 顺序）：ACC, B, DPH, DPL, PSW, AR0, AR4, AR5, AR6, AR7, AR1, AR2, AR3。
+     *  其中 AR1/AR2/AR3 用于 Keil C51 generic 指针传参（R1=低字节，R2=高字节，R3=内存类型），
+     *  其余 (OS_CTX_REG_COUNT - 3) 个寄存器清零。 */
+    for (index = 0; index < (OS_CTX_REG_COUNT - 3); index++)
+    {
+        *(++stk_addr) = 0;
+    }
+
+    /** 注意：必须用 pre-increment，否则会把 AR1 写到 AR7 槽位、AR3 留为未初始化。 */
+    *(++stk_addr) = (os_uint32_t)param;       /*!< AR1 = R1 (低) */
+    *(++stk_addr) = (os_uint32_t)param >> 8;  /*!< AR2 = R2 (高) */
+    *(++stk_addr) = (os_uint32_t)param >> 16; /*!< AR3 = R3 (内存类型) */
+
+    (os_thread_t *)g_thrd_rdylist.node[g_thrd_rdylist.num++] = pthread;
+
+    OS_EXIT_CRITICAL();
+    if (g_thrd_run_node != OS_NULL)
+        os_thread_schedule(OS_THREAD_READY);
+    return *pthread;
+
+erro:
+    return OS_NULL;
 }
 
 /**
@@ -393,23 +411,25 @@ os_err_t os_thread_suspend(os_thread_t *thread)
  **/
 os_err_t os_thread_resume(os_thread_t *thread)
 {
-    os_uint8_t index = 0;
+    os_uint8_t index;
+
     if (thread == OS_NULL)
-        goto erro;
+        return OS_NOK;
+
     OS_ENTER_CRITICAL();
     for (index = 0; index < g_thrd_blklist.num; index++)
     {
-        /** If a task terminates, it is added to the ready list. */
         if ((os_thread_t *)g_thrd_blklist.node[index] == thread)
         {
-            os_update_list((os_thread_t *)g_thrd_blklist.node[index], OS_THREAD_READY);
+            /* 先从 block list 移除，再加入 ready list；否则中间窗口内
+             * 同一线程会同时挂在两条链表上。 */
             os_blklist_replace(index, --g_thrd_blklist.num);
+            os_update_list(thread, OS_THREAD_READY);
             OS_EXIT_CRITICAL();
             return OS_OK;
         }
     }
     OS_EXIT_CRITICAL();
-erro:
     return OS_NOK;
 }
 

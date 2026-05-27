@@ -40,10 +40,10 @@
  *         plus 1 (idle thread) on the original basis.
  **/
 #define OS_THREAD_LIST_LEN (OS_THREAD_MAX_NUM + 1)
-#elif
+#else
 /**
  * @brief  The length of the thread list is macro,
- *         plus 1 (idle thread) on the original basis.
+ *         plus 2 (idle + soft-timer thread) on the original basis.
  **/
 #define OS_THREAD_LIST_LEN (OS_THREAD_MAX_NUM + 2)
 #endif
@@ -97,6 +97,9 @@ static volatile os_object_info_t os_object_ctn;
 os_err_t os_object_container_init(void)
 {
     os_object_ctn = os_malloc((void *)os_object_ctn, sizeof(struct os_object_info));
+    if (os_object_ctn == OS_NULL)
+        return OS_NOK;
+    (*os_object_ctn).thread.num = 0;
     return OS_OK;
 }
 
@@ -109,13 +112,29 @@ os_err_t os_object_container_init(void)
  **/
 os_err_t os_object_thread_init(os_object_t *object, os_uint8_t type)
 {
-    os_uint8_t index, id = 0;
-    for (index = 0; index < (*os_object_ctn).thread.num; index++)
+    /* 扫描 [0, OS_THREAD_LIST_LEN) 找第一个未被占用的 id。
+     * 不依赖 list 的排序状态——删除走"末位顶替"会破坏顺序，
+     * 原算法的"递增比对"会重复发号导致 id 冲突。
+     */
+    os_uint8_t candidate, i;
+    os_uint8_t taken;
+
+    for (candidate = 0; candidate < OS_THREAD_LIST_LEN; candidate++)
     {
-        if ((*((*os_object_ctn).thread.list[index]))->id != id++)
+        taken = 0;
+        for (i = 0; i < (*os_object_ctn).thread.num; i++)
+        {
+            if ((*((*os_object_ctn).thread.list[i]))->id == candidate)
+            {
+                taken = 1;
+                break;
+            }
+        }
+        if (!taken)
             break;
     }
-    (*object)->id = id;
+
+    (*object)->id = candidate;
     (*object)->type = type;
     (*os_object_ctn).thread.list[(*os_object_ctn).thread.num++] = object;
     return OS_OK;

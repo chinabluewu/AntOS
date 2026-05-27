@@ -46,6 +46,19 @@
  **/
 extern os_uint8_t xdata g_lock_cnt;
 
+/**
+ * @brief   上下文寄存器帧字节数。
+ * @note    必须与 os_thread_schedule 内 #pragma asm 中的 PUSH/POP 数量保持一致。
+ *          当前 PUSH/POP 顺序: ACC, B, DPH, DPL, PSW, AR0, AR4, AR5, AR6, AR7, AR1, AR2, AR3。
+ *          其中 AR1/AR2/AR3 用作 Keil C51 generic 指针传参槽。
+ **/
+#define OS_CTX_REG_COUNT  (13)
+
+/**
+ * @brief   完整初始栈帧字节数 = 入口 PC (2 字节) + 寄存器帧。
+ **/
+#define OS_CTX_FRAME_SIZE (OS_CTX_REG_COUNT + 2)
+
 /*------------------------------------------------------------------------
 |                              API FUNCTIONS                             |
 ------------------------------------------------------------------------*/

@@ -134,6 +134,11 @@ void antos_idle_thread_entry(void)
         if (os_idle_excute)
             os_idle_excute();
         // os_mem_reco();
+
+        /* 进入 IDLE 模式：CPU 时钟停止，外设和中断继续工作；
+         * 任意中断（包括系统 tick）会自动唤醒，回到此循环继续判断。
+         * 相比 for(;;) 空转可显著降低 idle 时的功耗。 */
+        PCON |= 0x01;
     }
 }
 

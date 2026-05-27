@@ -56,14 +56,11 @@
 #define OS_THREAD_SLEEP     0x01
 
 /**
- * @brief  The thread is in the blocking state macro code. 
+ * @brief  The thread is in the blocking state macro code.
+ * @note   挂起（suspend）目前与阻塞共用此状态——一旦语义需要区分，
+ *         应分配独立的状态码并同步 os_thread_suspend / resume / delete。
 **/
 #define OS_THREAD_BLOCK     0x02
-
-/**
- * @brief  The thread is in the suspended state macro code. 
-**/
-#define OS_THREAD_SUSPEND   0x02
 
 
 #if (OS_SOFT_TIMER_CTRL == 0)

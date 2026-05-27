@@ -2,7 +2,7 @@
 |                            FILE DESCRIPTION                            |
 ------------------------------------------------------------------------*/
 /*------------------------------------------------------------------------
-|  - File name     : os_port.C
+|  - File name     : os_cpu.c
 |  - Author        : zevorn
 |  - Update date   : 2021.03.25
 |  - Copyright(C)  : 2021-2021 zevorn. All rights reserved.
@@ -59,7 +59,9 @@ extern struct os_thread_list g_thrd_rdylist;
  ***/
 extern struct os_kernel_stk volatile idata kernel_stack;
 
-os_uint8_t data len;
+/* 仅供 COPY_STACK_TO_XRAM / COPY_XRAM_TO_STACK 宏使用的临时长度变量。
+ * 放在 data 段以获得最快访问；避免裸名"len"污染全局命名空间。 */
+static os_uint8_t data g_ctx_copy_len;
 
 /**
  * @brief RTOS access external RAM pointer.
@@ -86,9 +88,9 @@ extern void os_update_list(os_thread_t *thread, os_uint8_t status);
     {                                               \
         g_pxram_stk = (*g_thrd_run_node)->stk_addr; \
         g_pram_stk = kernel_stack.block;            \
-        len = SP - (os_uint8_t)kernel_stack.block;  \
-        *g_pxram_stk = len;                         \
-        while (len--)                               \
+        g_ctx_copy_len = SP - (os_uint8_t)kernel_stack.block;  \
+        *g_pxram_stk = g_ctx_copy_len;              \
+        while (g_ctx_copy_len--)                    \
         {                                           \
             *(++g_pxram_stk) = *(++g_pram_stk);     \
         }                                           \
@@ -102,8 +104,8 @@ extern void os_update_list(os_thread_t *thread, os_uint8_t status);
     {                                               \
         g_pxram_stk = (*g_thrd_run_node)->stk_addr; \
         g_pram_stk = kernel_stack.block;            \
-        len = g_pxram_stk[0];                       \
-        while (len--)                               \
+        g_ctx_copy_len = g_pxram_stk[0];            \
+        while (g_ctx_copy_len--)                    \
         {                                           \
             *(++g_pram_stk) = *(++g_pxram_stk);     \
         }                                           \
@@ -231,13 +233,19 @@ void os_update_ticks_handle(void)
     }
     g_thrd_slplist.num -= cnt;
 
-    /** Thread scheduling occurs immediately if a task completes sleep or if a higher priority task is ready */
-    if (cnt && (*(os_thread_t *)os_rdylist_get_max_prio(OS_NULL))->priority > (*g_thrd_run_node)->priority)
+    /** Thread scheduling occurs immediately if a task completes sleep or if a higher priority task is ready.
+     *  os_rdylist_get_max_prio 内部已容忍 NULL 参数，但这里显式传入 index 避免空指针解引用；
+     *  同时复用一次扫描结果，省去原实现中的重复 O(N) 查找。 */
+    if (cnt)
     {
-        os_update_list(g_thrd_run_node, OS_THREAD_READY);
-        g_thrd_run_node = (os_thread_t *)os_rdylist_get_max_prio(&index);
-        os_rdylist_replace(index, --g_thrd_rdylist.num);
-        (*g_thrd_run_node)->status = OS_THREAD_RUNNING;
+        os_thread_t *top_pp = (os_thread_t *)os_rdylist_get_max_prio(&index);
+        if (top_pp != OS_NULL && (*top_pp)->priority > (*g_thrd_run_node)->priority)
+        {
+            os_update_list(g_thrd_run_node, OS_THREAD_READY);
+            g_thrd_run_node = top_pp;
+            os_rdylist_replace(index, --g_thrd_rdylist.num);
+            (*g_thrd_run_node)->status = OS_THREAD_RUNNING;
+        }
     }
 
     COPY_XRAM_TO_STACK();

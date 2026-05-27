@@ -63,11 +63,11 @@
  **/
 #define OS_THREAD_LIST_LEN (OS_THREAD_MAX_NUM + 1)
 
-#elif
+#else
 
 /**
  * @brief The length of the thread list is macro,
- *        plus 1 (idle thread) on the original basis.
+ *        plus 2 (idle + soft-timer thread) on the original basis.
  **/
 #define OS_THREAD_LIST_LEN (OS_THREAD_MAX_NUM + 2)
 
@@ -295,8 +295,8 @@ os_err_t os_free(void *mptr)
             while (index--)
             {
                 free_mem = ((struct mblock *)(info))->maddr;
-                mov_mem = ((struct mblock *)(info - 8))->maddr;
-                msize = ((struct mblock *)(info - 8))->length;
+                mov_mem = ((struct mblock *)(info - MEM_BLOK_INFO_SIZE))->maddr;
+                msize = ((struct mblock *)(info - MEM_BLOK_INFO_SIZE))->length;
                 while (msize--)
                 {
                     *(free_mem++) = *(mov_mem++);
@@ -305,11 +305,11 @@ os_err_t os_free(void *mptr)
                 /** Gets the size of the memory block */
                 msize = ((struct mblock *)info)->length;
 
-                ((struct mblock *)(info))->mptr = ((struct mblock *)(info - 8))->mptr;
+                ((struct mblock *)(info))->mptr = ((struct mblock *)(info - MEM_BLOK_INFO_SIZE))->mptr;
                 *(((struct mblock *)(info))->mptr) -= msize;
 
-                ((struct mblock *)(info))->length = ((struct mblock *)(info - 8))->length;
-                ((struct mblock *)(info))->maddr = ((struct mblock *)(info - 8))->maddr - msize;
+                ((struct mblock *)(info))->length = ((struct mblock *)(info - MEM_BLOK_INFO_SIZE))->length;
+                ((struct mblock *)(info))->maddr = ((struct mblock *)(info - MEM_BLOK_INFO_SIZE))->maddr - msize;
 
                 ADDR_LOW_OFFSET(info, MEM_BLOK_INFO_SIZE);
             }
